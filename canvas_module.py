@@ -8,6 +8,7 @@ from PIL import Image
 from torchvision import transforms
 import os
 
+
 class CanvasModule:
     def __init__(self):
         self.canvas = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -36,6 +37,10 @@ class CanvasModule:
         self.ui_hover_time = 0.6  # Further reduced for faster UI response
         self.return_hover_time = 0.8  # Further reduced
         self.mode_hover_time = 0.8  # Further reduced
+
+        # Initialize hover tracking variables
+        self.color_hover_start = None
+        self.mode_hover_start = None
 
         # Load lightweight sketch recognition model
         self.model = None
@@ -170,14 +175,14 @@ class CanvasModule:
 
         # Draw horizontal color palette at top center
         colors = [
-            (0, 0, 255),    # Red
-            (0, 255, 0),    # Green
-            (255, 0, 0),    # Blue
+            (0, 0, 255),  # Red
+            (0, 255, 0),  # Green
+            (255, 0, 0),  # Blue
             (0, 255, 255),  # Yellow
             (255, 0, 255),  # Magenta
-            (255, 255, 0)   # Cyan
+            (255, 255, 0),  # Cyan
         ]
-        
+
         color_rects = []
         # Center the color palette horizontally
         palette_width = len(colors) * 55  # 50 + 5 spacing
@@ -428,13 +433,14 @@ class CanvasModule:
     def run(self, img, lm_list):
         should_exit = False
         img_height, img_width, _ = img.shape
-        
+        current_time = time.time()
+
         # Draw UI and get interactive areas
         img = overlay_image(
             img, self.brush_icon, img.shape[1] // 2 - 60, 70
         )  # Moved down to avoid color palette
         color_rects, mode_rects = self.draw_ui(img)
-        
+
         # Process hand gestures
         if lm_list:
             index_tip = lm_list[8]
@@ -442,11 +448,17 @@ class CanvasModule:
 
             # Calculate pinch distance (distance between thumb tip and index tip)
             thumb_tip = lm_list[4]
-            pinch_distance = np.linalg.norm(np.array([x, y]) - np.array([thumb_tip[1], thumb_tip[2]]))
-            
+            pinch_distance = np.linalg.norm(
+                np.array([x, y]) - np.array([thumb_tip[1], thumb_tip[2]])
+            )
+
+            # Initialize UI tracking variables
+            in_ui_area = False
+            mode_selected = False
+
             # Draw cursor
             cv2.circle(img, (x, y), 10, (0, 255, 0), cv2.FILLED)
-            
+
             # Check return button
             if is_point_in_rect(x, y, (20, 20, 100, 100)):
                 if self.hover_start is None:
@@ -455,24 +467,28 @@ class CanvasModule:
                     should_exit = True
             else:
                 self.hover_start = None
-                
+
             # Check color selection
             for i, rect in enumerate(color_rects):
                 if is_point_in_rect(x, y, rect):
-                    if self.hover_start is None:
-                        self.hover_start = time.time()
-                    elif time.time() - self.hover_start >= 1.0:
+                    in_ui_area = True
+                    if self.color_hover_start is None:
+                        self.color_hover_start = time.time()
+                    elif time.time() - self.color_hover_start >= 1.0:
                         self.color = [
                             (0, 0, 255),
                             (0, 255, 0),
                             (255, 0, 0),
                             (0, 255, 255),
                             (255, 0, 255),
-                            (255, 255, 0)
+                            (255, 255, 0),
                         ][i]
-                        self.hover_start = None
+                        self.color_hover_start = None
                     break
-            
+
+            if not any(is_point_in_rect(x, y, rect) for rect in color_rects):
+                self.color_hover_start = None
+
             # Check mode selection
             for i, rect in enumerate(mode_rects):
                 if is_point_in_rect(x, y, rect):
@@ -486,7 +502,7 @@ class CanvasModule:
                             self.canvas = np.zeros_like(self.canvas)
                         else:
                             self.mode = mode
-                        self.hover_start = None
+                        self.mode_hover_start = None
                     break
 
             if not mode_selected:
@@ -578,14 +594,19 @@ class CanvasModule:
                     if not self.drawing:
                         self.drawing = True
                         self.prev_point = None
-                    
+
                     # Convert coordinates to canvas space
                     canvas_x = int(x * self.canvas.shape[1] / img_width)
                     canvas_y = int(y * self.canvas.shape[0] / img_height)
-                    
+
                     if self.prev_point:
-                        cv2.line(self.canvas, self.prev_point, (canvas_x, canvas_y), 
-                                self.color, 5)
+                        cv2.line(
+                            self.canvas,
+                            self.prev_point,
+                            (canvas_x, canvas_y),
+                            self.color,
+                            5,
+                        )
                     self.prev_point = (canvas_x, canvas_y)
                 else:
                     # Stop drawing - fingers not pinched

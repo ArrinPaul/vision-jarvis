@@ -1,0 +1,16 @@
+{
+  "speech_timeout": 5.0,
+  "phrase_time_limit": 10.0,
+  "hover_timeout": 1.5,
+  "activation_radius": 100,
+  "tts_language": "en",
+  "max_audio_queue": 10,
+  "tts_cache_size": 50,
+  "log_level": "DEBUG",
+  "retry_attempts": 3,
+  "retry_delay": 1.0,
+  "continuous_listening": false,
+  "listen_pause_duration": 2.0,
+  "prefer_sapi_tts": true,
+  "enable_audio_feedback": true
+}

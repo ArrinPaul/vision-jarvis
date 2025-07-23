@@ -2,6 +2,7 @@ opencv-python
 mediapipe
 pyautogui
 speechrecognition
+pyaudio
 pycaw
 requests
 numpy
@@ -9,3 +10,12 @@ transformers
 torch
 torchvision
 pillow
+gtts
+pygame
+pyttsx3
+typing-extensions
+comtypes
+pywin32
+google-generativeai
+httpx
+python-dotenv
