@@ -273,7 +273,7 @@ class HandTracker:
         """
         if len(lm_list) < 21:
             return []
-
+            
         fingers = []
         handedness = hand_info.get("handedness", "Right") if hand_info else "Right"
 
@@ -301,7 +301,7 @@ class HandTracker:
                 fingers.append(1)
             else:
                 fingers.append(0)
-
+                
         return fingers
 
     def get_gesture(self, lm_list, hand_info=None, smooth=True):
