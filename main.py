@@ -45,7 +45,7 @@ def overlay_image(background, overlay, x, y):
 
 # Constants
 WIDTH, HEIGHT = 1280, 720
-HOVER_TIME = 5  # seconds to hover for activation
+HOVER_TIME = 2  # seconds to hover for activation
 
 
 class MainApp:
