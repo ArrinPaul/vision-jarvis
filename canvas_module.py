@@ -120,10 +120,10 @@ class CanvasModule:
             return (int(avg_x), int(avg_y))
 
     def draw_ui(self, img):
-        # Draw return button
+        # Draw return button (keep in top-left)
         img = overlay_image(img, self.return_icon, 20, 20)
 
-        # Draw color palette
+        # Draw horizontal color palette at top center
         colors = [
             (0, 0, 255),  # Red
             (0, 255, 0),  # Green
@@ -134,40 +134,44 @@ class CanvasModule:
         ]
 
         color_rects = []
+        # Center the color palette horizontally
+        palette_width = len(colors) * 55  # 50 + 5 spacing
+        start_x = (img.shape[1] - palette_width) // 2
+
         for i, color in enumerate(colors):
-            x = img.shape[1] - 70
-            y = 100 + i * 70
-            cv2.rectangle(img, (x, y), (x + 50, y + 50), color, -1)
-            cv2.rectangle(img, (x, y), (x + 50, y + 50), (200, 200, 200), 2)
-            color_rects.append((x, y, x + 50, y + 50))
+            x = start_x + i * 55
+            y = 20  # Top of screen
+            cv2.rectangle(img, (x, y), (x + 50, y + 40), color, -1)
+            cv2.rectangle(img, (x, y), (x + 50, y + 40), (200, 200, 200), 2)
+            color_rects.append((x, y, x + 50, y + 40))
 
             # Highlight selected color
             if color == self.color:
-                cv2.rectangle(img, (x - 5, y - 5), (x + 55, y + 55), (255, 255, 255), 2)
+                cv2.rectangle(img, (x - 3, y - 3), (x + 53, y + 43), (255, 255, 255), 3)
 
-        # Draw mode buttons
+        # Draw mode buttons - moved higher up
         modes = ["DRAW", "CLEAR", "RECOGNIZE"]
         mode_rects = []
         for i, mode in enumerate(modes):
             x = 50
-            y = img.shape[0] - 150 + i * 50
+            y = 120 + i * 50  # Moved much higher (was img.shape[0] - 150 + i * 50)
             cv2.rectangle(
                 img,
                 (x, y),
-                (x + 150, y + 40),
+                (x + 120, y + 35),  # Made slightly smaller
                 (50, 50, 50) if self.mode != mode else (0, 150, 0),
                 -1,
             )
             cv2.putText(
                 img,
                 mode,
-                (x + 10, y + 30),
+                (x + 10, y + 25),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.6,  # Slightly smaller font
                 (255, 255, 255),
                 2,
             )
-            mode_rects.append((x, y, x + 150, y + 40))
+            mode_rects.append((x, y, x + 120, y + 35))
 
         return color_rects, mode_rects
 
@@ -207,7 +211,9 @@ class CanvasModule:
         img_height, img_width, _ = img.shape
 
         # Draw UI and get interactive areas
-        img = overlay_image(img, self.brush_icon, img.shape[1] // 2 - 60, 50)
+        img = overlay_image(
+            img, self.brush_icon, img.shape[1] // 2 - 60, 70
+        )  # Moved down to avoid color palette
         color_rects, mode_rects = self.draw_ui(img)
 
         # Process hand gestures
@@ -293,6 +299,16 @@ class CanvasModule:
 
             if not mode_selected:
                 self.mode_hover_start = None
+
+            # Check brush icon area (prevent drawing over it)
+            brush_icon_x = img.shape[1] // 2 - 60
+            brush_icon_y = 70
+            if is_point_in_rect(
+                x,
+                y,
+                (brush_icon_x, brush_icon_y, brush_icon_x + 120, brush_icon_y + 120),
+            ):
+                in_ui_area = True
 
             # Draw cursor based on state and add visual feedback
             cursor_color = (0, 255, 0)  # Default green
