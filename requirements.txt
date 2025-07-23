@@ -1,0 +1,11 @@
+opencv-python
+mediapipe
+pyautogui
+speechrecognition
+pycaw
+requests
+numpy
+transformers
+torch
+torchvision
+pillow
