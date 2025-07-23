@@ -106,18 +106,6 @@ class HandTracker:
                 if draw_style == "box":
                     self._draw_bounding_box(img, hand_lms)
 
-        # Display FPS
-        if draw:
-            cv2.putText(
-                img,
-                f"FPS: {int(avg_fps)}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-
         return img, results, avg_fps
 
     def _draw_bounding_box(self, img, hand_landmarks):

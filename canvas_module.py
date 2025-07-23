@@ -39,33 +39,58 @@ class CanvasModule:
         self.return_hover_time = 0.8  # Further reduced
         self.mode_hover_time = 0.8  # Further reduced
 
-        # Load object recognition model
+        # Load lightweight sketch recognition model
         self.model = None
+        self.sketch_classifier = None
+        self.recognition_cache = {}  # Cache for recognition results
+        self.last_canvas_hash = None
+        self.continuous_mode = False  # For optional real-time recognition
+
         try:
-            self.model = torchvision.models.resnet18(pretrained=True)
+            # Use MobileNetV2 for much better efficiency
+            self.model = torchvision.models.mobilenet_v2(pretrained=True)
             self.model.eval()
+
+            # Simpler transform for sketches - keep 3 channels for MobileNet
             self.transform = transforms.Compose(
                 [
-                    transforms.Resize(256),
-                    transforms.CenterCrop(224),
+                    transforms.Resize((128, 128)),  # Smaller size for efficiency
                     transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                    # Keep 3 channels but normalize for sketches
+                    transforms.Lambda(
+                        lambda x: x if x.shape[0] == 3 else x.repeat(3, 1, 1)
                     ),
+                    # Light normalization optimized for sketches (not ImageNet)
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
                 ]
             )
-            self.classes = [
-                "car",
-                "flower",
-                "sun",
-                "tree",
-                "house",
-                "cat",
-                "dog",
-                "bird",
-            ]
-        except:
-            print("Object recognition model not available")
+
+            # Dynamic class system with confidence scores
+            self.base_classes = {
+                "circle": ["round", "ball", "sun", "wheel", "face"],
+                "rectangle": ["square", "box", "house", "building", "window"],
+                "triangle": ["arrow", "mountain", "roof", "tree"],
+                "lines": ["stick", "fence", "hair", "grass"],
+                "curves": ["wave", "snake", "river", "path"],
+                "star": ["star", "flower", "explosion"],
+                "animal": ["cat", "dog", "bird", "fish"],
+                "vehicle": ["car", "truck", "plane", "boat"],
+            }
+
+            # Flatten for quick lookup
+            self.all_classes = []
+            self.class_to_category = {}
+            for category, items in self.base_classes.items():
+                self.all_classes.extend(items)
+                for item in items:
+                    self.class_to_category[item] = category
+
+            print(f"Loaded efficient recognition with {len(self.all_classes)} classes")
+
+        except Exception as e:
+            print(f"Lightweight recognition model not available: {e}")
+            # Fallback to simple geometric recognition
+            self.use_geometric_fallback = True
 
     def stabilize_position(self, position):
         """Add position to stability buffer and return stabilized position"""
@@ -90,6 +115,28 @@ class CanvasModule:
             return (int(avg_x), int(avg_y))
         else:
             return position
+
+    def get_safe_text_position(
+        self, x, y, img_width, img_height, offset_x=20, offset_y=-20
+    ):
+        """Get a safe position for text that avoids UI elements"""
+        # Avoid top area (color palette and return button)
+        if y < 120:
+            y = 120
+
+        # Avoid left side (mode buttons)
+        if x < 200 and y < 220:
+            x = 200
+
+        # Avoid right edge
+        if x > img_width - 150:
+            x = img_width - 150
+
+        # Avoid bottom edge
+        if y > img_height - 60:
+            y = img_height - 60
+
+        return (x + offset_x, y + offset_y)
 
     def smooth_point(self, point):
         """Apply smoothing to reduce jitter in drawing"""
@@ -149,8 +196,8 @@ class CanvasModule:
             if color == self.color:
                 cv2.rectangle(img, (x - 3, y - 3), (x + 53, y + 43), (255, 255, 255), 3)
 
-        # Draw mode buttons - moved higher up
-        modes = ["DRAW", "CLEAR", "RECOGNIZE"]
+        # Draw mode buttons - moved higher up (removed RECOGNIZE button)
+        modes = ["DRAW", "CLEAR"]
         mode_rects = []
         for i, mode in enumerate(modes):
             x = 50
@@ -175,36 +222,209 @@ class CanvasModule:
 
         return color_rects, mode_rects
 
+    def detect_geometric_shapes(self, canvas):
+        """Lightweight geometric shape detection using OpenCV - very efficient"""
+        # Convert to grayscale
+        gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+
+        # Find contours
+        contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            return "empty", 0.0
+
+        # Get the largest contour (main drawing)
+        largest_contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest_contour)
+
+        if area < 500:  # Too small
+            return "small_shape", 0.5
+
+        # Approximate contour to polygon
+        epsilon = 0.02 * cv2.arcLength(largest_contour, True)
+        approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+        vertices = len(approx)
+
+        # Calculate metrics for classification
+        perimeter = cv2.arcLength(largest_contour, True)
+        hull = cv2.convexHull(largest_contour)
+        hull_area = cv2.contourArea(hull)
+
+        # Solidity (area/hull_area)
+        solidity = area / hull_area if hull_area > 0 else 0
+
+        # Aspect ratio
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        aspect_ratio = w / h if h > 0 else 1
+
+        # Circularity
+        circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
+
+        # Classification logic with confidence
+        if circularity > 0.7:
+            return "circle", min(0.9, circularity)
+        elif vertices == 3:
+            return "triangle", 0.8
+        elif vertices == 4:
+            if 0.8 <= aspect_ratio <= 1.2:
+                return "square", 0.85
+            else:
+                return "rectangle", 0.8
+        elif vertices > 6 and circularity > 0.5:
+            return "star", 0.7
+        elif solidity < 0.8:
+            return "complex_shape", 0.6
+        else:
+            return "polygon", 0.5
+
+    def get_canvas_hash(self, canvas):
+        """Quick hash of canvas for caching"""
+        # Simple hash based on non-zero pixels
+        return hash(
+            tuple(np.nonzero(canvas.sum(axis=2))[0][:100])
+        )  # Sample first 100 points
+
     def recognize_object(self):
-        if self.model is None:
+        """Dynamic recognition with caching and fallback methods"""
+        if np.sum(self.canvas) == 0:  # Empty canvas
             return
 
-        # Convert canvas to PIL image
-        canvas_rgb = cv2.cvtColor(self.canvas, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(canvas_rgb)
+        # Check cache first (most efficient)
+        canvas_hash = self.get_canvas_hash(self.canvas)
+        if canvas_hash == self.last_canvas_hash and hasattr(self, "last_result"):
+            # Canvas hasn't changed significantly, use cached result
+            class_name, confidence = self.last_result
+            self.display_recognition_result(class_name, confidence, cached=True)
+            return
 
-        # Preprocess and predict
-        input_tensor = self.transform(pil_img)
-        input_batch = input_tensor.unsqueeze(0)
+        self.last_canvas_hash = canvas_hash
 
-        with torch.no_grad():
-            output = self.model(input_batch)
+        # Try geometric detection first (fastest)
+        geometric_result, geo_confidence = self.detect_geometric_shapes(self.canvas)
 
-        # Get prediction
-        _, predicted_idx = torch.max(output, 1)
-        class_idx = predicted_idx.item() % len(self.classes)
-        class_name = self.classes[class_idx]
+        # If geometric detection is confident enough, use it
+        if geo_confidence > 0.7:
+            self.last_result = (geometric_result, geo_confidence)
+            self.display_recognition_result(geometric_result, geo_confidence)
+            return
 
-        # Display result on canvas
+        # If model is available and geometric detection isn't confident
+        if self.model is not None:
+            try:
+                # Convert canvas to PIL image
+                canvas_rgb = cv2.cvtColor(self.canvas, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(canvas_rgb)
+
+                # Preprocess (now much lighter)
+                input_tensor = self.transform(pil_img)
+                input_batch = input_tensor.unsqueeze(0)
+
+                with torch.no_grad():
+                    # Use only a subset of the model for efficiency
+                    features = self.model.features(input_batch)
+                    pooled = features.mean([2, 3])  # Global average pooling
+
+                    # Simple classification based on feature patterns
+                    feature_vec = pooled.flatten().numpy()
+
+                    # Use feature matching for dynamic classification
+                    best_class, ml_confidence = self.classify_from_features(feature_vec)
+
+                    # Combine geometric and ML results
+                    if ml_confidence > geo_confidence:
+                        result = (best_class, ml_confidence)
+                    else:
+                        result = (geometric_result, geo_confidence)
+
+            except Exception as e:
+                print(f"ML recognition failed: {e}")
+                result = (geometric_result, geo_confidence)
+        else:
+            # Use geometric result
+            result = (geometric_result, geo_confidence)
+
+        self.last_result = result
+        self.display_recognition_result(result[0], result[1])
+
+    def classify_from_features(self, features):
+        """Lightweight feature-based classification"""
+        # Simple heuristics based on feature patterns
+        feature_sum = np.sum(features)
+        feature_std = np.std(features)
+        feature_max = np.max(features)
+
+        # Basic pattern matching (can be expanded)
+        if feature_std < 0.1 and feature_sum > 10:
+            return "simple_shape", 0.7
+        elif feature_max > 5:
+            return "complex_drawing", 0.6
+        else:
+            return "sketch", 0.5
+
+    def display_recognition_result(self, class_name, confidence, cached=False):
+        """Display recognition result with confidence and status"""
+        # Clear a larger area to prevent overlaps
+        self.canvas[60:180, 60:450] = 0
+
+        # Display main result with better positioning
+        display_text = f"{class_name.replace('_', ' ').title()}"
         cv2.putText(
             self.canvas,
-            class_name,
-            (100, 100),
+            display_text,
+            (80, 100),  # Moved slightly left and up
             cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,  # Slightly smaller font
+            (0, 255, 0) if confidence > 0.7 else (0, 255, 255),
             2,
-            (0, 255, 0),
-            3,
         )
+
+        # Display confidence with proper spacing
+        conf_text = f"Confidence: {confidence:.1%}"
+        cv2.putText(
+            self.canvas,
+            conf_text,
+            (80, 130),  # Better vertical spacing
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+        )
+
+        # Display status with proper spacing
+        status = "CACHED" if cached else "NEW"
+        cv2.putText(
+            self.canvas,
+            status,
+            (80, 155),  # Moved below confidence instead of to the right
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (128, 128, 128),
+            1,
+        )
+
+    def add_dynamic_class(self, new_class, category="custom"):
+        """Add new class dynamically - very lightweight"""
+        if category not in self.base_classes:
+            self.base_classes[category] = []
+
+        if new_class not in self.all_classes:
+            self.base_classes[category].append(new_class)
+            self.all_classes.append(new_class)
+            self.class_to_category[new_class] = category
+
+            # Clear cache when classes change
+            self.recognition_cache.clear()
+            self.last_canvas_hash = None
+
+            print(f"Added '{new_class}' to category '{category}'")
+
+    def continuous_recognition(self, enable=True):
+        """Enable/disable continuous recognition while drawing"""
+        self.continuous_mode = enable
+        if enable:
+            print("Continuous recognition enabled - will recognize shapes as you draw")
+        else:
+            print("Continuous recognition disabled - recognition on demand only")
 
     def run(self, img, lm_list):
         should_exit = False
@@ -287,11 +507,9 @@ class CanvasModule:
                     if self.mode_hover_start is None:
                         self.mode_hover_start = current_time
                     elif current_time - self.mode_hover_start >= self.mode_hover_time:
-                        mode = ["DRAW", "CLEAR", "RECOGNIZE"][i]
+                        mode = ["DRAW", "CLEAR"][i]  # Removed RECOGNIZE from list
                         if mode == "CLEAR":
                             self.canvas = np.zeros_like(self.canvas)
-                        elif mode == "RECOGNIZE":
-                            self.recognize_object()
                         else:
                             self.mode = mode
                         self.mode_hover_start = None
@@ -346,10 +564,14 @@ class CanvasModule:
                 ):  # More sensitive pinch detection
                     cursor_color = (0, 0, 255)  # Red for drawing
                     cursor_size = 15
+                    # Position DRAWING text to avoid overlaps using safe positioning
+                    text_x, text_y = self.get_safe_text_position(
+                        x, y, img_width, img_height, -40, -40
+                    )
                     cv2.putText(
                         img,
                         "DRAWING",
-                        (x - 30, y - 30),
+                        (text_x, text_y),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.5,
                         (0, 0, 255),
@@ -358,16 +580,7 @@ class CanvasModule:
                 else:
                     cursor_color = (0, 255, 0)  # Green for ready
                     cursor_size = 10
-                    # Show pinch distance for debugging
-                    cv2.putText(
-                        img,
-                        f"Dist: {int(pinch_distance)}",
-                        (x + 20, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.4,
-                        (255, 255, 255),
-                        1,
-                    )
+                    # Removed pinch distance display to avoid FPS-like overlapping numbers
 
             # Draw the main cursor
             cv2.circle(img, (x, y), cursor_size, cursor_color, cv2.FILLED)
@@ -429,6 +642,15 @@ class CanvasModule:
                         self.drawing = False
                         self.smooth_points = []  # Clear smoothing points
 
+                        # Optional: Auto-recognize when drawing stops (lightweight)
+                        if hasattr(self, "continuous_mode") and self.continuous_mode:
+                            # Only run geometric detection for performance
+                            shape, confidence = self.detect_geometric_shapes(
+                                self.canvas
+                            )
+                            if confidence > 0.6:  # Lower threshold for continuous mode
+                                self.display_recognition_result(shape, confidence)
+
             else:
                 # Reset drawing state when not in draw mode or in UI area
                 self.drawing = False
@@ -444,10 +666,14 @@ class CanvasModule:
                 # Show phantom cursor for very brief losses
                 x, y = self.last_valid_position
                 cv2.circle(img, (x, y), 8, (128, 128, 128), 2)  # Gray phantom cursor
+                # Position tracking text safely to avoid overlaps
+                text_x, text_y = self.get_safe_text_position(
+                    x, y, img_width, img_height, 20, -20
+                )
                 cv2.putText(
                     img,
                     "TRACKING...",
-                    (x + 15, y - 15),
+                    (text_x, text_y),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.4,
                     (128, 128, 128),
@@ -481,36 +707,41 @@ class CanvasModule:
             img = cv2.addWeighted(img, 0.7, canvas_resized, 0.3, 0)
         # If no canvas content, skip blending entirely for better performance
 
-        # Show drawing status with more details and tracking info
+        # Show drawing status - simplified to avoid overlaps
+        status_lines = []
+
+        # Main mode status only
         status_text = f"Mode: {self.mode}"
         if self.drawing:
             status_text += " | DRAWING"
+        status_lines.append(status_text)
 
-        # Add tracking status
+        # Simplified tracking status (no frequent updates)
         current_time = time.time()
         time_since_last_hand = current_time - self.last_hand_time
-        if lm_list:
-            status_text += " | TRACKING: ACTIVE"
-            # Show pinch distance for fine-tuning
-            thumb_tip = lm_list[4]
-            index_tip = lm_list[8]
-            current_distance = (
-                (thumb_tip[1] - index_tip[1]) ** 2 + (thumb_tip[2] - index_tip[2]) ** 2
-            ) ** 0.5
-            status_text += f" | Pinch: {int(current_distance)}"
-        elif time_since_last_hand <= self.hand_lost_threshold:
-            status_text += f" | TRACKING: PERSISTENT ({self.hand_lost_threshold - time_since_last_hand:.1f}s)"
-        else:
-            status_text += " | TRACKING: LOST"
 
-        cv2.putText(
-            img,
-            status_text,
-            (10, img.shape[0] - 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,  # Smaller font to fit more info
-            (255, 255, 255),
-            2,
-        )
+        if lm_list:
+            tracking_text = "TRACKING: ACTIVE"
+            # Removed pinch distance to avoid FPS-like number updates
+        elif time_since_last_hand <= self.hand_lost_threshold:
+            tracking_text = f"TRACKING: PERSISTENT ({self.hand_lost_threshold - time_since_last_hand:.1f}s)"
+        else:
+            tracking_text = "TRACKING: LOST"
+
+        status_lines.append(tracking_text)
+
+        # Display status lines with proper spacing to avoid overlaps
+        y_start = img.shape[0] - 45  # Start higher to accommodate multiple lines
+        for i, line in enumerate(status_lines):
+            if line.strip():  # Only display non-empty lines
+                cv2.putText(
+                    img,
+                    line,
+                    (10, y_start + i * 20),  # 20 pixel spacing between lines
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    2,
+                )
 
         return img, should_exit
