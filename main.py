@@ -164,17 +164,20 @@ class MainApp:
                 img = cv2.flip(img, 1)
 
                 # Always run hand detection for best tracking
-                img, results = self.tracker.find_hands(img)
-                lm_list = self.tracker.find_position(img, results)
+                img, results, fps = self.tracker.find_hands(img)
+                lm_list, hand_info = self.tracker.find_position(img, results)
+
+                # Convert to legacy format for compatibility with existing modules
+                legacy_lm_list = self.tracker.get_legacy_landmark_list(lm_list)
 
                 if self.active_module:
                     # Run active module
                     if self.active_module == "Voice Assistant":
-                        img, should_exit = self.voice_assistant.run(img, lm_list)
+                        img, should_exit = self.voice_assistant.run(img, legacy_lm_list)
                     elif self.active_module == "Camera":
-                        img, should_exit = self.camera_module.run(img, lm_list)
+                        img, should_exit = self.camera_module.run(img, legacy_lm_list)
                     elif self.active_module == "Canvas":
-                        img, should_exit = self.canvas_module.run(img, lm_list)
+                        img, should_exit = self.canvas_module.run(img, legacy_lm_list)
 
                     if should_exit:
                         self.active_module = None
@@ -186,9 +189,9 @@ class MainApp:
                     # Main interface
                     img = self.draw_main_ui(img)
 
-                    if lm_list:
+                    if legacy_lm_list:
                         self.last_hand_time = current_time
-                        index_tip = lm_list[8]  # Index finger tip
+                        index_tip = legacy_lm_list[8]  # Index finger tip
                         x, y = index_tip[1], index_tip[2]
 
                         # Draw cursor
