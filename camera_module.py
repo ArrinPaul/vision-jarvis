@@ -245,7 +245,13 @@ class CameraModule:
             # Get stabilized finger positions
             index_tip = lm_list[8]
             thumb_tip = lm_list[4]
-            raw_position = (index_tip[1], index_tip[2])
+
+            # Convert normalized coordinates to pixel coordinates
+            img_height, img_width = img.shape[:2]
+            raw_position = (
+                int(index_tip[1] * img_width),
+                int(index_tip[2] * img_height),
+            )
             x, y = self._stabilize_position(raw_position)
             self.last_stable_position = (x, y)
 
@@ -480,3 +486,42 @@ class CameraModule:
                     f.write(f"- {os.path.basename(photo)}\n")
         except Exception as e:
             print(f"Error saving metadata: {e}")
+
+    def cleanup(self):
+        """Clean up resources when module is being destroyed"""
+        try:
+            # Clear captured image data
+            if hasattr(self, "captured_img"):
+                self.captured_img = None
+
+            # Clear position tracking data
+            if hasattr(self, "position_history"):
+                self.position_history.clear()
+
+            # Clear session photos list
+            if hasattr(self, "session_photos"):
+                self.session_photos.clear()
+
+            # Reset state variables
+            self.captured = False
+            self.capture_ready = False
+            self.continuous_capture = False
+            self.last_stable_position = None
+
+            # Save final metadata before cleanup
+            try:
+                self._save_session_metadata()
+            except:
+                pass  # Don't fail cleanup if metadata save fails
+
+            print("Camera module cleaned up successfully")
+
+        except Exception as e:
+            print(f"Error during camera cleanup: {e}")
+
+    def __del__(self):
+        """Destructor to ensure cleanup on garbage collection"""
+        try:
+            self.cleanup()
+        except:
+            pass  # Silently handle cleanup errors during destruction

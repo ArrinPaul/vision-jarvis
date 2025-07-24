@@ -1,11 +1,14 @@
 import cv2
 import numpy as np
 import time
-import torch
-import torchvision
+
+# Temporarily disable PyTorch imports to prevent segfaults
+# import torch
+# import torchvision
 from utils import load_icon, overlay_image, is_point_in_rect
-from PIL import Image
-from torchvision import transforms
+
+# from PIL import Image
+# from torchvision import transforms
 import os
 
 
@@ -49,7 +52,16 @@ class CanvasModule:
         self.last_canvas_hash = None
         self.continuous_mode = False  # For optional real-time recognition
 
+        # Disable AI recognition temporarily to prevent segmentation faults
+        self.use_geometric_fallback = True
+        self.model = None
+        self.transform = None
+        self.all_classes = []
+        self.class_to_category = {}
+
         try:
+            # Commented out to prevent potential segfaults
+            """
             # Use MobileNetV2 for much better efficiency
             self.model = torchvision.models.mobilenet_v2(pretrained=True)
             self.model.eval()
@@ -89,6 +101,8 @@ class CanvasModule:
                     self.class_to_category[item] = category
 
             print(f"Loaded efficient recognition with {len(self.all_classes)} classes")
+            """
+            print("AI recognition disabled - using geometric fallback only")
 
         except Exception as e:
             print(f"Lightweight recognition model not available: {e}")
@@ -228,56 +242,68 @@ class CanvasModule:
 
     def detect_geometric_shapes(self, canvas):
         """Lightweight geometric shape detection using OpenCV - very efficient"""
-        # Convert to grayscale
-        gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+        try:
+            # Safety check for canvas
+            if canvas is None or canvas.size == 0:
+                return "empty", 0.0
 
-        # Find contours
-        contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Convert to grayscale
+            gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
 
-        if not contours:
-            return "empty", 0.0
+            # Find contours
+            contours, _ = cv2.findContours(
+                gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
 
-        # Get the largest contour (main drawing)
-        largest_contour = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest_contour)
+            if not contours:
+                return "empty", 0.0
 
-        if area < 500:  # Too small
-            return "small_shape", 0.5
+            # Get the largest contour (main drawing)
+            largest_contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
 
-        # Approximate contour to polygon
-        epsilon = 0.02 * cv2.arcLength(largest_contour, True)
-        approx = cv2.approxPolyDP(largest_contour, epsilon, True)
-        vertices = len(approx)
+            if area < 500:  # Too small
+                return "small_shape", 0.5
 
-        # Calculate metrics for classification
-        perimeter = cv2.arcLength(largest_contour, True)
-        hull = cv2.convexHull(largest_contour)
-        hull_area = cv2.contourArea(hull)
+            # Approximate contour to polygon
+            epsilon = 0.02 * cv2.arcLength(largest_contour, True)
+            approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+            vertices = len(approx)
 
-        # Solidity (area/hull_area)
-        solidity = area / hull_area if hull_area > 0 else 0
+            # Calculate metrics for classification
+            perimeter = cv2.arcLength(largest_contour, True)
+            hull = cv2.convexHull(largest_contour)
+            hull_area = cv2.contourArea(hull)
 
-        # Aspect ratio
-        x, y, w, h = cv2.boundingRect(largest_contour)
-        aspect_ratio = w / h if h > 0 else 1
+            # Solidity (area/hull_area)
+            solidity = area / hull_area if hull_area > 0 else 0
 
-        # Circularity
-        circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
+            # Aspect ratio
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            aspect_ratio = w / h if h > 0 else 1
 
-        # Classification logic with confidence
-        if circularity > 0.7:
-            return "circle", min(0.9, circularity)
-        elif vertices == 3:
-            return "triangle", 0.8
-        elif vertices == 4:
-            if 0.8 <= aspect_ratio <= 1.2:
-                return "square", 0.85
-            else:
-                return "rectangle", 0.8
-        elif vertices > 6 and circularity > 0.5:
-            return "star", 0.7
-        elif solidity < 0.8:
-            return "complex_shape", 0.6
+            # Circularity
+            circularity = (
+                4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
+            )
+
+            # Classification logic with confidence
+            if circularity > 0.7:
+                return "circle", min(0.9, circularity)
+            elif vertices == 3:
+                return "triangle", 0.8
+            elif vertices == 4:
+                if 0.8 <= aspect_ratio <= 1.2:
+                    return "square", 0.85
+                else:
+                    return "rectangle", 0.8
+            elif vertices > 6 and circularity > 0.5:
+                return "star", 0.7
+            elif solidity < 0.8:
+                return "complex_shape", 0.6
+        except Exception as e:
+            print(f"Error in geometric shape detection: {e}")
+            return "error", 0.0
         else:
             return "polygon", 0.5
 
@@ -312,6 +338,10 @@ class CanvasModule:
             self.display_recognition_result(geometric_result, geo_confidence)
             return
 
+        # AI recognition disabled to prevent segfaults - using geometric only
+        result = (geometric_result, geo_confidence)
+
+        """
         # If model is available and geometric detection isn't confident
         if self.model is not None:
             try:
@@ -346,6 +376,7 @@ class CanvasModule:
         else:
             # Use geometric result
             result = (geometric_result, geo_confidence)
+        """
 
         self.last_result = result
         self.display_recognition_result(result[0], result[1])
@@ -367,8 +398,20 @@ class CanvasModule:
 
     def display_recognition_result(self, class_name, confidence, cached=False):
         """Display recognition result with confidence and status"""
-        # Clear a larger area to prevent overlaps
-        self.canvas[60:180, 60:450] = 0
+        # Clear a larger area to prevent overlaps with bounds checking
+        try:
+            if (
+                self.canvas is not None
+                and self.canvas.shape[0] > 180
+                and self.canvas.shape[1] > 450
+            ):
+                self.canvas[60:180, 60:450] = 0
+            else:
+                print("Canvas too small for recognition result display")
+                return
+        except (IndexError, AttributeError) as e:
+            print(f"Error accessing canvas for recognition display: {e}")
+            return
 
         # Display main result with better positioning
         display_text = f"{class_name.replace('_', ' ').title()}"
@@ -431,9 +474,38 @@ class CanvasModule:
             print("Continuous recognition disabled - recognition on demand only")
 
     def run(self, img, lm_list):
+        """Main canvas module run method with comprehensive error handling"""
         should_exit = False
-        img_height, img_width, _ = img.shape
+
+        # Basic safety checks
+        if img is None:
+            print("Canvas module received null image")
+            return np.zeros((480, 640, 3), dtype=np.uint8), should_exit
+
+        try:
+            img_height, img_width, _ = img.shape
+        except (AttributeError, ValueError):
+            print("Invalid image format received")
+            return np.zeros((480, 640, 3), dtype=np.uint8), should_exit
+
         current_time = time.time()
+
+        # Validate image dimensions
+        if img_height <= 0 or img_width <= 0:
+            print(f"Invalid image dimensions: {img_width}x{img_height}")
+            return img, should_exit
+
+        # Ensure canvas is properly sized - resize if needed
+        try:
+            if self.canvas.shape[0] != img_height or self.canvas.shape[1] != img_width:
+                # Resize canvas to match current image dimensions
+                old_canvas = self.canvas.copy()
+                self.canvas = cv2.resize(old_canvas, (img_width, img_height))
+                print(f"Canvas resized to match image: {img_width}x{img_height}")
+        except Exception as e:
+            print(f"Error resizing canvas: {e}")
+            # Recreate canvas if resize fails
+            self.canvas = np.zeros((img_height, img_width, 3), dtype=np.uint8)
 
         # Draw UI and get interactive areas
         img = overlay_image(
@@ -441,23 +513,73 @@ class CanvasModule:
         )  # Moved down to avoid color palette
         color_rects, mode_rects = self.draw_ui(img)
 
-        # Process hand gestures
-        if lm_list:
-            index_tip = lm_list[8]
-            x, y = index_tip[1], index_tip[2]
+        # Process hand gestures with safety checks
+        if lm_list and len(lm_list) > 8:  # Ensure we have enough landmarks
+            # Update hand tracking time
+            self.last_hand_time = current_time
+
+            # Handle both new normalized coordinates (0-1) and legacy pixel coordinates
+            try:
+                index_tip = lm_list[8]
+                thumb_tip = lm_list[4]
+
+                # Safety check for landmark data
+                if (
+                    not index_tip
+                    or len(index_tip) < 3
+                    or not thumb_tip
+                    or len(thumb_tip) < 3
+                ):
+                    return img, should_exit
+
+                # Check if coordinates are normalized (0-1) or pixel coordinates
+                if (
+                    len(index_tip) >= 3
+                    and 0 <= index_tip[1] <= 1
+                    and 0 <= index_tip[2] <= 1
+                ):
+                    # New normalized coordinates - convert to pixel coordinates
+                    x = int(index_tip[1] * img_width)
+                    y = int(index_tip[2] * img_height)
+                    thumb_x = int(thumb_tip[1] * img_width)
+                    thumb_y = int(thumb_tip[2] * img_height)
+                else:
+                    # Legacy pixel coordinates
+                    x, y = int(index_tip[1]), int(index_tip[2])
+                    thumb_x, thumb_y = int(thumb_tip[1]), int(thumb_tip[2])
+
+                # Bounds checking to prevent segmentation faults
+                x = max(0, min(img_width - 1, x))
+                y = max(0, min(img_height - 1, y))
+                thumb_x = max(0, min(img_width - 1, thumb_x))
+                thumb_y = max(0, min(img_height - 1, thumb_y))
+
+            except (IndexError, TypeError, ValueError) as e:
+                print(f"Error processing landmark coordinates: {e}")
+                return img, should_exit
+
+            # Store valid position for tracking persistence
+            self.last_valid_position = (x, y)
 
             # Calculate pinch distance (distance between thumb tip and index tip)
-            thumb_tip = lm_list[4]
             pinch_distance = np.linalg.norm(
-                np.array([x, y]) - np.array([thumb_tip[1], thumb_tip[2]])
+                np.array([x, y]) - np.array([thumb_x, thumb_y])
             )
 
             # Initialize UI tracking variables
             in_ui_area = False
             mode_selected = False
 
-            # Draw cursor
-            cv2.circle(img, (x, y), 10, (0, 255, 0), cv2.FILLED)
+            # Draw cursor - ensure coordinates are integers and within bounds
+            try:
+                if 0 <= x < img_width and 0 <= y < img_height:
+                    cv2.circle(img, (x, y), 10, (0, 255, 0), cv2.FILLED)
+                else:
+                    print(
+                        f"Cursor coordinates out of bounds: ({x}, {y}) for image {img_width}x{img_height}"
+                    )
+            except Exception as e:
+                print(f"Error drawing cursor: {e}")
 
             # Check return button
             if is_point_in_rect(x, y, (20, 20, 100, 100)):
@@ -572,56 +694,80 @@ class CanvasModule:
                     cursor_size = 10
                     # Removed pinch distance display to avoid FPS-like overlapping numbers
 
-            # Draw the main cursor
-            cv2.circle(img, (x, y), cursor_size, cursor_color, cv2.FILLED)
+            # Draw the main cursor with bounds checking
+            try:
+                if 0 <= x < img_width and 0 <= y < img_height:
+                    cv2.circle(img, (x, y), cursor_size, cursor_color, cv2.FILLED)
+            except Exception as e:
+                print(f"Error drawing main cursor: {e}")
 
             # Drawing logic - only if not in UI area and in DRAW mode
             if self.mode == "DRAW" and not in_ui_area:
-                # Convert coordinates to canvas space first
-                canvas_x = int(x * self.canvas.shape[1] / img_width)
-                canvas_y = int(y * self.canvas.shape[0] / img_height)
-
-                # Ensure coordinates are within canvas bounds
-                canvas_x = max(0, min(canvas_x, self.canvas.shape[1] - 1))
-                canvas_y = max(0, min(canvas_y, self.canvas.shape[0] - 1))
-
-                # Apply smoothing
-                smooth_point = self.smooth_point((canvas_x, canvas_y))
-
-                if (
-                    pinch_distance < self.pinch_threshold
-                ):  # More sensitive pinch detection
-                    if not self.drawing:
-                        self.drawing = True
-                        self.prev_point = None
-
-                    # Convert coordinates to canvas space
+                # Convert coordinates to canvas space with safety checks
+                if img_width > 0 and img_height > 0:
                     canvas_x = int(x * self.canvas.shape[1] / img_width)
                     canvas_y = int(y * self.canvas.shape[0] / img_height)
 
-                    if self.prev_point:
-                        cv2.line(
-                            self.canvas,
-                            self.prev_point,
-                            (canvas_x, canvas_y),
-                            self.color,
-                            5,
-                        )
-                    self.prev_point = (canvas_x, canvas_y)
-                else:
-                    # Stop drawing - fingers not pinched
-                    if self.drawing:
-                        self.drawing = False
-                        self.smooth_points = []  # Clear smoothing points
+                    # Ensure coordinates are within canvas bounds with extra safety margin
+                    canvas_x = max(1, min(canvas_x, self.canvas.shape[1] - 2))
+                    canvas_y = max(1, min(canvas_y, self.canvas.shape[0] - 2))
 
-                        # Optional: Auto-recognize when drawing stops (lightweight)
-                        if hasattr(self, "continuous_mode") and self.continuous_mode:
-                            # Only run geometric detection for performance
-                            shape, confidence = self.detect_geometric_shapes(
-                                self.canvas
-                            )
-                            if confidence > 0.6:  # Lower threshold for continuous mode
-                                self.display_recognition_result(shape, confidence)
+                    # Apply smoothing with bounds checking
+                    smooth_point = self.smooth_point((canvas_x, canvas_y))
+
+                    # Additional safety check for smooth_point
+                    if smooth_point is not None:
+                        smooth_x, smooth_y = smooth_point
+                        smooth_x = max(1, min(smooth_x, self.canvas.shape[1] - 2))
+                        smooth_y = max(1, min(smooth_y, self.canvas.shape[0] - 2))
+                        smooth_point = (smooth_x, smooth_y)
+
+                        if (
+                            pinch_distance < self.pinch_threshold
+                        ):  # More sensitive pinch detection
+                            if not self.drawing:
+                                self.drawing = True
+                                self.prev_point = None
+
+                            # Use the smoothed canvas coordinates for drawing with safety checks
+                            if self.prev_point and smooth_point:
+                                try:
+                                    cv2.line(
+                                        self.canvas,
+                                        self.prev_point,
+                                        smooth_point,
+                                        self.color,
+                                        5,
+                                    )
+                                except Exception as e:
+                                    print(f"Drawing error: {e}")
+                                    self.drawing = False
+                                    self.prev_point = None
+                            self.prev_point = smooth_point
+                        else:
+                            # Stop drawing - fingers not pinched
+                            if self.drawing:
+                                self.drawing = False
+                                self.smooth_points = []  # Clear smoothing points
+
+                                # Optional: Auto-recognize when drawing stops (lightweight)
+                                if (
+                                    hasattr(self, "continuous_mode")
+                                    and self.continuous_mode
+                                ):
+                                    try:
+                                        # Only run geometric detection for performance
+                                        shape, confidence = (
+                                            self.detect_geometric_shapes(self.canvas)
+                                        )
+                                        if (
+                                            confidence > 0.6
+                                        ):  # Lower threshold for continuous mode
+                                            self.display_recognition_result(
+                                                shape, confidence
+                                            )
+                                    except Exception as e:
+                                        print(f"Recognition error: {e}")
 
             else:
                 # Reset drawing state when not in draw mode or in UI area
@@ -672,12 +818,20 @@ class CanvasModule:
             # If within threshold, keep current state to handle brief tracking losses
 
         # Optimized canvas blending - only process if there's actual drawing
-        if np.any(self.canvas):  # Only blend if canvas has content
-            canvas_resized = cv2.resize(self.canvas, (img_width, img_height))
+        try:
+            if np.any(self.canvas):  # Only blend if canvas has content
+                # Ensure canvas and image have compatible dimensions
+                if self.canvas.shape[:2] == (img_height, img_width):
+                    canvas_resized = self.canvas
+                else:
+                    canvas_resized = cv2.resize(self.canvas, (img_width, img_height))
 
-            # Simple additive blending for better performance
-            img = cv2.addWeighted(img, 0.7, canvas_resized, 0.3, 0)
-        # If no canvas content, skip blending entirely for better performance
+                # Simple additive blending for better performance
+                img = cv2.addWeighted(img, 0.7, canvas_resized, 0.3, 0)
+            # If no canvas content, skip blending entirely for better performance
+        except Exception as e:
+            print(f"Canvas blending error: {e}")
+            # Continue without blending if there's an error
 
         # Show drawing status - simplified to avoid overlaps
         status_lines = []
@@ -717,3 +871,46 @@ class CanvasModule:
                 )
 
         return img, should_exit
+
+    def cleanup(self):
+        """Clean up resources when module is being destroyed"""
+        try:
+            # Clear canvas data
+            if hasattr(self, "canvas"):
+                self.canvas = None
+
+            # Clear model references to prevent memory leaks
+            if hasattr(self, "model"):
+                self.model = None
+
+            # Clear transform references
+            if hasattr(self, "transform"):
+                self.transform = None
+
+            # Clear recognition cache
+            if hasattr(self, "recognition_cache"):
+                self.recognition_cache.clear()
+
+            # Clear tracking data
+            if hasattr(self, "smooth_points"):
+                self.smooth_points.clear()
+
+            if hasattr(self, "position_stability_buffer"):
+                self.position_stability_buffer.clear()
+
+            # Reset state variables
+            self.drawing = False
+            self.prev_point = None
+            self.last_valid_position = None
+
+            print("Canvas module cleaned up successfully")
+
+        except Exception as e:
+            print(f"Error during canvas cleanup: {e}")
+
+    def __del__(self):
+        """Destructor to ensure cleanup on garbage collection"""
+        try:
+            self.cleanup()
+        except:
+            pass  # Silently handle cleanup errors during destruction

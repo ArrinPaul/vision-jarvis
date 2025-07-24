@@ -866,8 +866,15 @@ class VoiceAssistant:
         else:
             return "I heard you, but I need AI features to be properly configured to understand complex requests."
 
-    def _draw_status(self, img: np.ndarray) -> np.ndarray:
-        """Draw status information on image"""
+    def _draw_status(
+        self, img: np.ndarray, window_size: Tuple[int, int] = None
+    ) -> np.ndarray:
+        """Draw status information on image with dynamic sizing"""
+        if window_size:
+            width, height = window_size
+        else:
+            height, width = img.shape[:2]
+
         # Determine status and color
         if self.listening:
             status, color = "LISTENING...", Constants.UI_COLORS["LISTENING"]
@@ -878,25 +885,75 @@ class VoiceAssistant:
         else:
             status, color = "READY", Constants.UI_COLORS["READY"]
 
+        # Dynamic font scaling
+        font_scale = max(0.5, min(1.2, width / 1280))
+        thickness = max(1, int(2 * font_scale))
+
+        # Status background and text
+        status_text = f"Status: {status}"
+        text_size = cv2.getTextSize(status_text, Constants.FONT, font_scale, thickness)[
+            0
+        ]
+
+        # Position status in top-right with margin
+        margin = int(20 * font_scale)
+        status_x = width - text_size[0] - margin
+        status_y = int(40 * font_scale)
+
+        # Draw background rectangle
+        cv2.rectangle(
+            img,
+            (status_x - 10, status_y - 25),
+            (status_x + text_size[0] + 10, status_y + 5),
+            (0, 0, 0),
+            -1,
+        )
+        cv2.rectangle(
+            img,
+            (status_x - 10, status_y - 25),
+            (status_x + text_size[0] + 10, status_y + 5),
+            color,
+            2,
+        )
+
         # Draw status text
         cv2.putText(
             img,
-            f"Status: {status}",
-            (img.shape[1] - 250, 40),
+            status_text,
+            (status_x, status_y),
             Constants.FONT,
-            Constants.FONT_SCALE,
+            font_scale,
             color,
-            Constants.FONT_THICKNESS,
+            thickness,
         )
 
         # Draw continuous listening indicator
         if self.config.continuous_listening and self.continuous_listening_active:
+            cl_text = "Continuous Listening: ON"
+            cl_size = cv2.getTextSize(cl_text, Constants.FONT, font_scale * 0.7, 1)[0]
+            cl_x = width - cl_size[0] - margin
+            cl_y = status_y + int(35 * font_scale)
+
+            cv2.rectangle(
+                img,
+                (cl_x - 10, cl_y - 20),
+                (cl_x + cl_size[0] + 10, cl_y + 5),
+                (0, 50, 0),
+                -1,
+            )
+            cv2.rectangle(
+                img,
+                (cl_x - 10, cl_y - 20),
+                (cl_x + cl_size[0] + 10, cl_y + 5),
+                Constants.UI_COLORS["READY"],
+                1,
+            )
             cv2.putText(
                 img,
-                "Continuous Listening: ON",
-                (img.shape[1] - 300, 70),
+                cl_text,
+                (cl_x, cl_y),
                 Constants.FONT,
-                0.5,
+                font_scale * 0.7,
                 Constants.UI_COLORS["READY"],
                 1,
             )
@@ -904,92 +961,218 @@ class VoiceAssistant:
         return img
 
     def _draw_listening_animation(
-        self, img: np.ndarray, center_x: int, center_y: int
+        self,
+        img: np.ndarray,
+        center_x: int,
+        center_y: int,
+        window_size: Tuple[int, int] = None,
     ) -> np.ndarray:
-        """Draw animated circle during listening"""
-        if self.listening:
-            # Animated pulsing circle
-            base_radius = 50
-            pulse_amplitude = 20
-            pulse_frequency = 5
+        """Draw animated circle during listening with dynamic sizing"""
+        if not self.listening:
+            return img
+
+        if window_size:
+            width, height = window_size
+        else:
+            height, width = img.shape[:2]
+
+        # Scale animation based on window size
+        scale_factor = min(width, height) / 720  # Based on default height
+
+        # Animated pulsing circle with multiple rings
+        base_radius = int(50 * scale_factor)
+        pulse_amplitude = int(20 * scale_factor)
+        pulse_frequency = 3
+
+        current_time = time.time()
+
+        # Multiple concentric circles for better effect
+        for i in range(3):
+            phase_offset = i * 0.5
             radius = base_radius + int(
-                pulse_amplitude * abs(np.sin(time.time() * pulse_frequency))
+                pulse_amplitude
+                * abs(np.sin(current_time * pulse_frequency + phase_offset))
             )
+            alpha = 1.0 - (i * 0.3)  # Fade outer circles
+
+            color = tuple(int(c * alpha) for c in Constants.UI_COLORS["LISTENING"])
+            thickness = max(1, int(3 * scale_factor) - i)
+
             cv2.circle(
-                img, (center_x, center_y), radius, Constants.UI_COLORS["LISTENING"], 3
+                img,
+                (center_x, center_y),
+                radius + i * int(10 * scale_factor),
+                color,
+                thickness,
             )
+
+        # Add inner filled circle
+        inner_radius = int(15 * scale_factor)
+        cv2.circle(
+            img,
+            (center_x, center_y),
+            inner_radius,
+            Constants.UI_COLORS["LISTENING"],
+            -1,
+        )
+        cv2.circle(img, (center_x, center_y), inner_radius, (255, 255, 255), 2)
 
         return img
 
-    def _draw_result_text(self, img: np.ndarray, center_y: int) -> np.ndarray:
-        """Draw wrapped result text"""
+    def _draw_result_text(
+        self, img: np.ndarray, center_y: int, window_size: Tuple[int, int] = None
+    ) -> np.ndarray:
+        """Draw wrapped result text with dynamic sizing"""
         if not self.result or self.listening:
             return img
 
-        # Text wrapping logic
+        if window_size:
+            width, height = window_size
+        else:
+            height, width = img.shape[:2]
+
+        # Dynamic scaling
+        font_scale = max(0.5, min(1.0, width / 1280))
+        thickness = max(1, int(2 * font_scale))
+        margin = int(40 * font_scale)
+
+        # Enhanced text wrapping logic
         words = self.result.split(" ")
         lines = []
         current_line = ""
-        max_width = img.shape[1] - 80  # Leave margin
+        max_width = width - (margin * 2)
 
         for word in words:
             test_line = current_line + word + " "
             text_size = cv2.getTextSize(
-                test_line,
-                Constants.FONT,
-                Constants.FONT_SCALE,
-                Constants.FONT_THICKNESS,
+                test_line, Constants.FONT, font_scale, thickness
             )[0]
 
             if text_size[0] < max_width:
                 current_line = test_line
             else:
-                if current_line:  # Avoid empty lines
+                if current_line:
                     lines.append(current_line.strip())
                 current_line = word + " "
 
         if current_line:
             lines.append(current_line.strip())
 
-        # Draw text lines
-        y_pos = center_y + 150
-        line_height = 40
+        # Calculate total text height
+        line_height = int(35 * font_scale)
+        total_height = len(lines) * line_height
 
-        for line in lines:
-            if y_pos < img.shape[0] - 20:  # Stay within image bounds
+        # Position text in lower portion with background
+        start_y = max(
+            center_y + int(120 * font_scale),
+            height - total_height - int(60 * font_scale),
+        )
+
+        if lines:
+            # Draw background panel for text
+            panel_y = start_y - int(20 * font_scale)
+            panel_height = total_height + int(40 * font_scale)
+
+            # Gradient background
+            overlay = img.copy()
+            cv2.rectangle(
+                overlay,
+                (margin - 10, panel_y),
+                (width - margin + 10, panel_y + panel_height),
+                (30, 30, 30),
+                -1,
+            )
+            cv2.addWeighted(overlay, 0.8, img, 0.2, 0, img)
+
+            # Border
+            cv2.rectangle(
+                img,
+                (margin - 10, panel_y),
+                (width - margin + 10, panel_y + panel_height),
+                Constants.UI_COLORS["READY"],
+                2,
+            )
+
+        # Draw text lines
+        y_pos = start_y
+        for i, line in enumerate(lines):
+            if y_pos < height - int(20 * font_scale):
+                # Draw shadow
                 cv2.putText(
                     img,
                     line,
-                    (40, y_pos),
+                    (margin + 2, y_pos + 2),
                     Constants.FONT,
-                    Constants.FONT_SCALE,
-                    Constants.UI_COLORS["READY"],
-                    Constants.FONT_THICKNESS,
+                    font_scale,
+                    (0, 0, 0),
+                    thickness,
+                )
+                # Draw main text
+                cv2.putText(
+                    img,
+                    line,
+                    (margin, y_pos),
+                    Constants.FONT,
+                    font_scale,
+                    (255, 255, 255),
+                    thickness,
                 )
                 y_pos += line_height
 
         return img
 
     def _process_gestures(
-        self, img: np.ndarray, lm_list: List, center_x: int, center_y: int
+        self,
+        img: np.ndarray,
+        lm_list: List,
+        center_x: int,
+        center_y: int,
+        window_size: Tuple[int, int] = None,
     ) -> bool:
-        """Process hand gestures and return exit status"""
+        """Process hand gestures and return exit status with dynamic sizing"""
         should_exit = False
 
         if not lm_list:
             self.hover_start = None
             return should_exit
 
+        if window_size:
+            width, height = window_size
+        else:
+            height, width = img.shape[:2]
+
+        # Scale activation radius based on window size
+        scale_factor = min(width, height) / 720
+        activation_radius = int(self.config.activation_radius * scale_factor)
+
         # Get finger tip position (index finger)
         index_tip = lm_list[8]
-        x, y = index_tip[1], index_tip[2]
+        # Convert normalized coordinates to pixel coordinates
+        x, y = int(index_tip[1] * width), int(index_tip[2] * height)
 
-        # Draw cursor
-        cv2.circle(img, (x, y), 10, Constants.UI_COLORS["READY"], cv2.FILLED)
+        # Enhanced cursor with multiple layers
+        cursor_size = max(8, int(15 * scale_factor))
+        cv2.circle(img, (x, y), cursor_size + 5, (0, 0, 0), 2)  # Shadow
+        cv2.circle(img, (x, y), cursor_size, Constants.UI_COLORS["READY"], 3)
+        cv2.circle(img, (x, y), cursor_size - 5, (255, 255, 255), -1)
+        cv2.circle(img, (x, y), cursor_size - 8, Constants.UI_COLORS["READY"], -1)
+
+        # Dynamic return button size and position
+        button_size = int(80 * scale_factor)
+        margin = int(20 * scale_factor)
+        return_rect = (margin, margin, margin + button_size, margin + button_size)
 
         # Check return button hover
-        return_rect = (20, 20, 100, 100)
         if is_point_in_rect(x, y, return_rect):
+            # Draw hover effect
+            cv2.rectangle(
+                img,
+                (return_rect[0] - 5, return_rect[1] - 5),
+                (return_rect[2] + 5, return_rect[3] + 5),
+                (0, 255, 255),
+                3,
+            )
+
             if self.hover_start is None:
                 self.hover_start = time.time()
             elif time.time() - self.hover_start >= self.config.hover_timeout:
@@ -998,12 +1181,25 @@ class VoiceAssistant:
             # Check microphone activation (only if continuous listening is disabled)
             distance = ((x - center_x) ** 2 + (y - center_y) ** 2) ** 0.5
             if (
-                distance < self.config.activation_radius
+                distance < activation_radius
                 and not self.listening
                 and not self.is_speaking
                 and not self.thinking
                 and not self.config.continuous_listening
             ):
+                # Draw activation zone
+                cv2.circle(
+                    img, (center_x, center_y), activation_radius, (0, 255, 255), 2
+                )
+                cv2.putText(
+                    img,
+                    "Release to activate",
+                    (center_x - 80, center_y + activation_radius + 30),
+                    Constants.FONT,
+                    0.6,
+                    (0, 255, 255),
+                    2,
+                )
                 self.start_listening()
 
             # Reset hover timer when not hovering over return button
@@ -1012,11 +1208,23 @@ class VoiceAssistant:
 
         return should_exit
 
-    def run(self, img: np.ndarray, lm_list: List) -> Tuple[np.ndarray, bool]:
-        """Main method to run the voice assistant interface"""
+    def run(
+        self, img: np.ndarray, lm_list: List, window_size: Tuple[int, int] = None
+    ) -> Tuple[np.ndarray, bool]:
+        """Main method to run the voice assistant interface with dynamic sizing support"""
         should_exit = False
 
         try:
+            # Get window dimensions
+            if window_size:
+                width, height = window_size
+            else:
+                height, width = img.shape[:2]
+
+            # Resize image to match window size if needed
+            if img.shape[1] != width or img.shape[0] != height:
+                img = cv2.resize(img, (width, height))
+
             # Welcome message on first run
             if self.first_run:
                 self.speak(
@@ -1028,24 +1236,61 @@ class VoiceAssistant:
                 if self.config.continuous_listening:
                     self.start_continuous_listening()
 
-            # Calculate center coordinates
-            center_x, center_y = img.shape[1] // 2, img.shape[0] // 2
+            # Calculate center coordinates based on current size
+            center_x, center_y = width // 2, height // 2
 
-            # Draw UI elements
-            img = overlay_image(img, self.mic_icon, center_x - 60, center_y - 60)
-            img = overlay_image(img, self.return_icon, 20, 20)
+            # Scale icon sizes based on window size
+            scale_factor = min(width, height) / 720
+            icon_size = (int(120 * scale_factor), int(120 * scale_factor))
+            return_icon_size = (int(80 * scale_factor), int(80 * scale_factor))
+
+            # Resize icons if needed
+            mic_icon = (
+                cv2.resize(self.mic_icon, icon_size)
+                if self.mic_icon is not None
+                else None
+            )
+            return_icon = (
+                cv2.resize(self.return_icon, return_icon_size)
+                if self.return_icon is not None
+                else None
+            )
+
+            # Draw enhanced background
+            self._draw_background(img, width, height)
+
+            # Draw UI elements with dynamic positioning
+            if mic_icon is not None:
+                mic_x = center_x - icon_size[0] // 2
+                mic_y = center_y - icon_size[1] // 2
+
+                # Draw microphone background circle
+                bg_radius = int(icon_size[0] * 0.7)
+                cv2.circle(img, (center_x, center_y), bg_radius, (60, 60, 60), -1)
+                cv2.circle(img, (center_x, center_y), bg_radius, (120, 120, 120), 3)
+
+                img = overlay_image(img, mic_icon, mic_x, mic_y)
+
+            if return_icon is not None:
+                margin = int(20 * scale_factor)
+                img = overlay_image(img, return_icon, margin, margin)
 
             # Draw status information
-            img = self._draw_status(img)
+            img = self._draw_status(img, window_size)
 
             # Draw listening animation
-            img = self._draw_listening_animation(img, center_x, center_y)
+            img = self._draw_listening_animation(img, center_x, center_y, window_size)
 
             # Draw result text
-            img = self._draw_result_text(img, center_y)
+            img = self._draw_result_text(img, center_y, window_size)
 
             # Process hand gestures
-            should_exit = self._process_gestures(img, lm_list, center_x, center_y)
+            should_exit = self._process_gestures(
+                img, lm_list, center_x, center_y, window_size
+            )
+
+            # Draw title
+            self._draw_title(img, width, height, scale_factor)
 
         except Exception as e:
             self.logger.error(f"Error in main run loop: {e}")
@@ -1060,6 +1305,74 @@ class VoiceAssistant:
             )
 
         return img, should_exit
+
+    def _draw_background(self, img: np.ndarray, width: int, height: int):
+        """Draw enhanced background with gradient effect"""
+        # Create subtle gradient background
+        overlay = img.copy()
+
+        # Dark overlay
+        cv2.rectangle(overlay, (0, 0), (width, height), (20, 20, 40), -1)
+        cv2.addWeighted(overlay, 0.3, img, 0.7, 0, img)
+
+        # Add subtle grid pattern
+        grid_spacing = max(50, min(100, width // 20))
+        for x in range(0, width, grid_spacing):
+            cv2.line(img, (x, 0), (x, height), (40, 40, 60), 1)
+        for y in range(0, height, grid_spacing):
+            cv2.line(img, (0, y), (width, y), (40, 40, 60), 1)
+
+    def _draw_title(
+        self, img: np.ndarray, width: int, height: int, scale_factor: float
+    ):
+        """Draw title with dynamic scaling"""
+        title = "AI Voice Assistant"
+        font_scale = max(0.8, min(2.0, scale_factor))
+        thickness = max(2, int(3 * scale_factor))
+
+        # Get text size for centering
+        text_size = cv2.getTextSize(
+            title, cv2.FONT_HERSHEY_DUPLEX, font_scale, thickness
+        )[0]
+        text_x = (width - text_size[0]) // 2
+        text_y = int(60 * scale_factor)
+
+        # Draw title background
+        cv2.rectangle(
+            img,
+            (text_x - 20, text_y - 35),
+            (text_x + text_size[0] + 20, text_y + 10),
+            (30, 30, 30),
+            -1,
+        )
+        cv2.rectangle(
+            img,
+            (text_x - 20, text_y - 35),
+            (text_x + text_size[0] + 20, text_y + 10),
+            (100, 100, 100),
+            2,
+        )
+
+        # Draw shadow
+        cv2.putText(
+            img,
+            title,
+            (text_x + 2, text_y + 2),
+            cv2.FONT_HERSHEY_DUPLEX,
+            font_scale,
+            (0, 0, 0),
+            thickness + 1,
+        )
+        # Draw main text
+        cv2.putText(
+            img,
+            title,
+            (text_x, text_y),
+            cv2.FONT_HERSHEY_DUPLEX,
+            font_scale,
+            (255, 255, 255),
+            thickness,
+        )
 
     def cleanup(self):
         """Cleanup resources and threads"""
