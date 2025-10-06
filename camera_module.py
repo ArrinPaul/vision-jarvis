@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime
 from collections import deque
 from utils import load_icon, overlay_image, is_point_in_rect
+from exporters.image_exporter import ImageExporter
 
 
 class CameraModule:
@@ -458,6 +459,16 @@ class CameraModule:
                 self._save_session_metadata()
 
                 print(f"Photo saved: {filename}")
+
+                # Export WebP alongside JPG (non-UI, non-gesture change)
+                try:
+                    webp_path = ImageExporter.export_webp(
+                        self.captured_img, filename, quality=80, method=4, lossless=False
+                    )
+                    print(f"WebP saved: {webp_path}")
+                except Exception as e:
+                    print(f"WebP export failed (kept original JPG): {e}")
+
             else:
                 print("Failed to save photo!")
 

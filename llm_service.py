@@ -55,9 +55,9 @@ class LLMService:
 
         try:
             # Create a more specific prompt for system commands
-            prompt = f"""You are an AI assistant that controls a Windows computer. 
+            prompt = f"""You are an AI assistant that controls a Windows computer.
 The user can ask you to perform system actions or answer questions.
-For system commands, respond with just the command text in the format: 
+For system commands, respond with just the command text in the format:
 COMMAND: [command text]
 
 Available commands:
@@ -96,3 +96,71 @@ Assistant:"""
             else:
                 print(f"Gemini API error: {e}")
                 return "I'm having trouble connecting to the AI service. Please try again later."
+
+    def generate_structured(self, query: str) -> dict:
+        """Return structured output for command vs chat.
+        Schema: {"type": "command"|"chat", "action": str|None, "args": dict, "reply": str}
+        """
+        if not self.enabled or not self.model:
+            return {"type": "chat", "action": None, "args": {}, "reply": self.generate_response(query)}
+
+        sys_prompt = (\
+            """
+You are an AI assistant controlling a Windows PC. When a user asks for an action, reply ONLY with JSON in this schema:
+{
+  "type": "command" | "chat",
+  "action": "open|close|volume|mute|set_volume|playpause|next|previous|press|type|mouse_move|click|scroll|screenshot|lock|search|google",
+  "args": { },
+  "reply": "Short natural-language reply"
+}
+Rules:
+- If it's a command, set type="command" and fill action+args. Keep reply short.
+- If it's general conversation, set type="chat" and provide reply; leave action null.
+- Examples:
+  User: open notepad -> {"type":"command","action":"open","args":{"app":"notepad"},"reply":"Opening Notepad"}
+  User: set volume to 40% -> {"type":"command","action":"set_volume","args":{"level":40},"reply":"Setting volume to 40%"}
+  User: what's the time -> {"type":"chat","action":null,"args":{},"reply":"It's 3:14 PM."}
+"""
+
+
+        )
+        try:
+            response = self.model.generate_content(sys_prompt + "\nUser: " + query + "\nAssistant:")
+            text = (response.text or "").strip()
+
+            # Extract first JSON block
+            import json, re
+            m = re.search(r"\{[\s\S]*?\}", text)
+            if not m:
+                return {"type": "chat", "action": None, "args": {}, "reply": text or "I didn't understand that request."}
+
+            try:
+                data = json.loads(m.group(0))
+            except json.JSONDecodeError:
+                return {"type": "chat", "action": None, "args": {}, "reply": text or "I had trouble parsing that request."}
+
+            # Normalize and validate
+            if not isinstance(data, dict):
+                return {"type": "chat", "action": None, "args": {}, "reply": text}
+
+            data.setdefault("type", "chat")
+            data.setdefault("action", None)
+            data.setdefault("args", {})
+            data.setdefault("reply", "")
+
+            # Basic safety: only allow known actions
+            allowed = {"open","close","volume","mute","set_volume","playpause","next","previous","press","type","mouse_move","click","scroll","screenshot","lock","search","google","windows_tile","system_status","calendar","routine","briefing","enable_briefings"}
+            if data.get("type") == "command" and data.get("action") not in allowed:
+                data["type"] = "chat"
+                data["action"] = None
+                data["reply"] = f"I cannot perform that action for security reasons. Available actions: {', '.join(sorted(allowed))}"
+
+            return data
+
+        except Exception as e:
+            print(f"LLM structured error: {e}")
+            error_msg = str(e).lower()
+            if "api key" in error_msg or "authentication" in error_msg:
+                return {"type": "chat", "action": None, "args": {}, "reply": "Authentication error. Please check your Gemini API key configuration."}
+            else:
+                return {"type": "chat", "action": None, "args": {}, "reply": self.generate_response(query)}

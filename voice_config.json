@@ -12,5 +12,23 @@
   "continuous_listening": false,
   "listen_pause_duration": 2.0,
   "prefer_sapi_tts": true,
-  "enable_audio_feedback": true
+  "enable_audio_feedback": true,
+  "persona_name": "Jarvis",
+  "wake_word": "jarvis",
+  "require_wake_word": true,
+  "wake_word_backend": "openwakeword",
+  "asr_backend": "faster_whisper",
+  "tts_backend": "edge_tts",
+  "features": {
+    "vision_object_detection": true,
+    "event_logging": true,
+    "structured_commands": true,
+    "wake_word_detection": true,
+    "context_monitoring": true
+  },
+  "whisper_model_size": "base",
+  "whisper_device": "cpu",
+  "whisper_compute_type": "int8",
+  "edge_voice": "en-US-GuyNeural",
+  "vision_model_path": "models/yolov8n.onnx"
 }

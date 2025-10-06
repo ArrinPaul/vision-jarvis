@@ -8,6 +8,8 @@ from camera_module import CameraModule
 from canvas_module import CanvasModule
 from utils import load_icon
 import sys
+import json
+from vision_tools import create_vision_manager_safe
 
 
 def overlay_image(background, overlay, x, y):
@@ -104,9 +106,45 @@ class MainApp:
         # Initialize scaling factors
         self.get_window_size()
 
-        self.camera_module = CameraModule()
-        self.canvas_module = CanvasModule()
-        self.voice_assistant = VoiceAssistant("voice_config.json")
+        # Initialize modules with error handling
+        self.camera_module = None
+        self.canvas_module = None
+        self.voice_assistant = None
+        self.vision_manager = None
+        
+        # Initialize camera module
+        try:
+            self.camera_module = CameraModule()
+            print("✓ Camera module initialized successfully")
+        except Exception as e:
+            print(f"✗ Camera module initialization failed: {e}")
+            
+        # Initialize canvas module
+        try:
+            self.canvas_module = CanvasModule()
+            print("✓ Canvas module initialized successfully")
+        except Exception as e:
+            print(f"✗ Canvas module initialization failed: {e}")
+            
+        # Initialize voice assistant
+        try:
+            self.voice_assistant = VoiceAssistant("voice_config.json")
+            print("✓ Voice assistant initialized successfully")
+        except Exception as e:
+            print(f"✗ Voice assistant initialization failed: {e}")
+            print("Voice features will not be available")
+            
+        # Initialize vision manager for object detection (optional)
+        try:
+            vm_config = {
+                "features": {"vision_object_detection": True},
+                "vision_model_path": "models/yolov8n.onnx"
+            }
+            self.vision_manager = create_vision_manager_safe(vm_config)
+            print("✓ Vision manager initialized successfully")
+        except Exception as e:
+            print(f"✗ Vision manager initialization failed: {e}")
+            print("Vision detection features will not be available")
         self.running = True
 
     def update_icon_positions(self):
@@ -913,6 +951,8 @@ class MainApp:
 
                             print("Modules cleaned up and reset successfully")
 
+
+
                         except Exception as e:
                             print(f"Error during module cleanup: {e}")
                             # Fallback: force garbage collection and create new instances
@@ -990,6 +1030,24 @@ class MainApp:
                             None  # Reset cursor smoothing when hand not detected
                         )
 
+
+                    # Vision overlay in main interface
+                    if hasattr(self, "vision_manager") and self.vision_manager:
+                        try:
+                            analysis = self.vision_manager.analyze_frame(img)
+                            # Draw bounding boxes
+                            for obj in analysis.get("objects", []):
+                                x1, y1, x2, y2 = [int(v) for v in obj["bbox"]]
+                                conf = obj["confidence"]
+                                label = f"{obj['class_name']} {conf:.2f}"
+                                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                cv2.putText(img, label, (x1, max(20, y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+                            # Draw scene description
+                            scene = analysis.get("scene_description", "")
+                            if scene:
+                                cv2.putText(img, scene, (10, self.height - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+                        except Exception:
+                            pass
                 # Show enhanced FPS counter
                 delta = time.time() - current_time
                 fps = 1 / delta if delta > 0 else 0

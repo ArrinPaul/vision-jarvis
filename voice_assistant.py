@@ -22,6 +22,22 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import subprocess
 import sys
+import asyncio
+
+from action_registry import ActionRegistry
+from speech_asr import create_asr_manager
+from tts_backend import create_tts_manager
+from wake_word import create_wake_word_detector
+from memory_store import create_memory_store
+from context_oracle import create_context_oracle
+from metrics import get_metrics_collector, start_timer, end_timer
+
+# Optional automation imports
+try:
+    from task_automation import AutomationEngine, NaturalLanguageRoutineCreator
+    AUTOMATION_AVAILABLE = True
+except Exception:
+    AUTOMATION_AVAILABLE = False
 
 # Try to import Windows SAPI for fallback TTS
 try:
@@ -60,15 +76,25 @@ class VoiceAssistantConfig:
     enable_audio_feedback: bool = (
         True  # Enable audio responses (can be disabled for silent mode)
     )
+    # Jarvis-like configuration
+    persona_name: str = "Jarvis"
+    wake_word: str = "jarvis"
+    require_wake_word: bool = True
 
     @classmethod
     def from_file(cls, config_path: str) -> "VoiceAssistantConfig":
         """Load configuration from JSON file"""
         try:
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config_data = json.load(f)
-            return cls(**config_data)
-        except (FileNotFoundError, json.JSONDecodeError):
+
+            # Filter out unknown keys to avoid TypeError
+            valid_keys = {field.name for field in cls.__dataclass_fields__.values()}
+            filtered_data = {k: v for k, v in config_data.items() if k in valid_keys}
+
+            return cls(**filtered_data)
+        except (FileNotFoundError, json.JSONDecodeError, TypeError) as e:
+            print(f"Warning: Failed to load config from {config_path}: {e}")
             return cls()  # Return default config
 
 
@@ -130,9 +156,22 @@ class AudioManager:
                     if female_voice:
                         self.sapi_engine.setProperty("voice", female_voice.id)
 
+                # Prefer a "Jarvis"-like male voice when persona is Jarvis; otherwise fallback
+                try:
+                    preferred_male = None
+                    for voice in voices:
+                        name = voice.name.lower()
+                        if any(k in name for k in ["david", "guy", "zach", "brian", "male"]):
+                            preferred_male = voice
+                            break
+                    if getattr(self.config, "persona_name", "").lower() == "jarvis" and preferred_male:
+                        self.sapi_engine.setProperty("voice", preferred_male.id)
+                except Exception:
+                    pass
+
                 # Set speech rate and volume
-                self.sapi_engine.setProperty("rate", 180)  # Speed of speech
-                self.sapi_engine.setProperty("volume", 0.9)  # Volume level (0.0 to 1.0)
+                self.sapi_engine.setProperty("rate", 185)  # Slightly brisk Jarvis cadence
+                self.sapi_engine.setProperty("volume", 0.95)  # Volume level (0.0 to 1.0)
                 self.logger.info("Windows SAPI TTS engine initialized successfully")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize Windows SAPI TTS: {e}")
@@ -528,12 +567,17 @@ class VoiceAssistant:
         # Initialize threading attributes first
         self.listen_thread = None
 
-        # Load configuration
-        self.config = (
-            VoiceAssistantConfig.from_file(config_path)
-            if config_path
-            else VoiceAssistantConfig()
-        )
+        # Load configuration with error handling
+        try:
+            self.config = (
+                VoiceAssistantConfig.from_file(config_path)
+                if config_path
+                else VoiceAssistantConfig()
+            )
+        except Exception as e:
+            print(f"Warning: Failed to load config from {config_path}: {e}")
+            print("Using default configuration")
+            self.config = VoiceAssistantConfig()
 
         # Setup logging
         self._setup_logging()
@@ -559,6 +603,9 @@ class VoiceAssistant:
                 self.logger.error(f"Failed to initialize LLM service: {e}")
                 self.llm_service = None
 
+            # Initialize new Jarvis backends
+            self._init_jarvis_backends()
+
             # State management
             self.listening = False
             self.is_speaking = False
@@ -576,6 +623,9 @@ class VoiceAssistant:
             self.return_icon = load_icon("return_icon.png", (80, 80))
 
             self.logger.info("Voice Assistant initialized successfully")
+
+            # Initialize automation subsystem (non-fatal if it fails)
+            self._init_automation()
 
         except Exception as e:
             self.logger.error(f"Voice Assistant initialization failed: {e}")
@@ -600,7 +650,175 @@ class VoiceAssistant:
         logging.getLogger("comtypes.client._managing").setLevel(logging.WARNING)
         logging.getLogger("comtypes.client._generate").setLevel(logging.WARNING)
         logging.getLogger("comtypes._post_coinit.unknwn").setLevel(logging.WARNING)
-        logging.getLogger("comtypes").setLevel(logging.WARNING)
+    def _init_jarvis_backends(self):
+        """Initialize Jarvis-specific backends based on config"""
+        try:
+            # Initialize metrics collector
+            self.metrics = get_metrics_collector()
+
+            # Initialize memory store
+            self.memory = create_memory_store(
+                max_entries=100,
+                persistence_file="jarvis_memory.json"
+            )
+
+            # Initialize context oracle
+            self.context_oracle = create_context_oracle(update_interval=2.0)
+            if self.config.__dict__.get("features", {}).get("context_monitoring", True):
+                self.context_oracle.start_monitoring()
+
+            # Initialize ASR backend
+            asr_backend = self.config.__dict__.get("asr_backend", "speech_recognition")
+            if asr_backend != "speech_recognition":
+                try:
+                    self.asr_manager = create_asr_manager(asr_backend, self.config.__dict__)
+                    if self.asr_manager.is_available():
+                        self.logger.info(f"ASR backend '{asr_backend}' initialized")
+                    else:
+                        self.logger.warning(f"ASR backend '{asr_backend}' failed, using fallback")
+                        self.asr_manager = None
+                except Exception as e:
+                    self.logger.error(f"ASR backend initialization failed: {e}")
+                    self.asr_manager = None
+            else:
+                self.asr_manager = None
+
+            # Initialize TTS backend
+            tts_backend = self.config.__dict__.get("tts_backend", "sapi")
+            if tts_backend != "sapi":
+                try:
+                    self.tts_manager = create_tts_manager(tts_backend, self.config.__dict__)
+                    if self.tts_manager.is_available():
+                        self.logger.info(f"TTS backend '{tts_backend}' initialized")
+                    else:
+                        self.logger.warning(f"TTS backend '{tts_backend}' failed, using fallback")
+                        self.tts_manager = None
+                except Exception as e:
+                    self.logger.error(f"TTS backend initialization failed: {e}")
+                    self.tts_manager = None
+            else:
+                self.tts_manager = None
+
+            # Initialize wake word detector (optional)
+            if self.config.__dict__.get("features", {}).get("wake_word_detection", False):
+                try:
+                    wake_backend = self.config.__dict__.get("wake_word_backend", "openwakeword")
+                    wake_word = self.config.__dict__.get("wake_word", "jarvis")
+                    self.wake_detector = create_wake_word_detector(wake_backend, wake_word)
+                    if hasattr(self.wake_detector, 'start'):
+                        self.wake_detector.start()
+                        self.logger.info(f"Wake word detection started: {wake_word}")
+                except Exception as e:
+                    self.logger.error(f"Wake word detection initialization failed: {e}")
+                    self.wake_detector = None
+            else:
+                self.wake_detector = None
+
+            self.logger.info("Jarvis backends initialized successfully")
+
+        except Exception as e:
+            self.logger.error(f"Jarvis backend initialization failed: {e}")
+            # Set fallback values
+            self.metrics = get_metrics_collector()
+            self.memory = None
+            self.context_oracle = None
+            self.asr_manager = None
+            self.tts_manager = None
+            self.wake_detector = None
+
+    def _init_automation(self):
+        """Initialize automation engine and NLP routine creator if available"""
+        self.automation_engine = None
+        self.nlp_routine_creator = None
+        if not AUTOMATION_AVAILABLE:
+            self.logger.info("Automation modules not available - skipping automation init")
+            return
+        try:
+            self.automation_engine = AutomationEngine(data_dir="data/automation")
+            self.nlp_routine_creator = NaturalLanguageRoutineCreator(self.automation_engine.routine_builder)
+            self.logger.info("Automation engine + NLP routine creator initialized")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize automation subsystem: {e}")
+            self.automation_engine = None
+            self.nlp_routine_creator = None
+
+    def _run_async(self, coro):
+        """Run an async coroutine in a background thread with its own event loop"""
+        def runner():
+            try:
+                asyncio.run(coro)
+            except Exception as e:
+                self.logger.error(f"Async execution error: {e}")
+        threading.Thread(target=runner, daemon=True).start()
+
+    # ---------------- Automation Handling ---------------- #
+    def _maybe_handle_automation(self, command: str) -> bool:
+        """Detect and handle automation-related natural language commands.
+
+        Returns True if the command was handled (and response spoken), else False.
+        """
+        if not self.automation_engine or not self.nlp_routine_creator:
+            return False
+
+        cmd = command.lower().strip()
+
+        # Create routine intents
+        if ("create" in cmd or "make" in cmd or "build" in cmd) and ("routine" in cmd or "automation" in cmd):
+            return self._automation_create_routine(cmd)
+
+        # List routines
+        if "list routines" in cmd or "list automations" in cmd or cmd.startswith("what routines"):
+            routines = self.automation_engine.list_routines()
+            if not routines:
+                self.speak("You don't have any routines yet.")
+            else:
+                names = ", ".join(r["name"] for r in routines[:10])
+                extra = "" if len(routines) <= 10 else f" and {len(routines)-10} more"
+                self.speak(f"You have {len(routines)} routines: {names}{extra}.")
+            return True
+
+        # Run routine (e.g., "run focus mode routine", "start morning routine")
+        if any(cmd.startswith(p) for p in ["run ", "start ", "execute "]):
+            keywords = cmd.split()
+            # Remove leading verb
+            if keywords[0] in ["run", "start", "execute"]:
+                remainder = " ".join(keywords[1:])
+            else:
+                remainder = cmd
+            remainder = remainder.replace("routine", "").replace("automation", "").strip()
+            if remainder:
+                return self._automation_run_by_name(remainder)
+        return False
+
+    def _automation_create_routine(self, command: str) -> bool:
+        """Create a routine from natural language and persist it."""
+        try:
+            parse_result = self.nlp_routine_creator.parse_natural_language(command)
+            routine = parse_result["routine"]
+            # Persist and register
+            self.automation_engine.add_routine(routine)
+            self.speak(f"Created routine {routine.name} with {len(routine.tasks)} tasks.")
+            return True
+        except Exception as e:
+            self.logger.error(f"Routine creation failed: {e}")
+            self.speak("I couldn't create that routine.")
+            return True
+
+    def _automation_run_by_name(self, name_fragment: str) -> bool:
+        """Find routine by partial name match and execute it asynchronously."""
+        routines = list(self.automation_engine.routines.values())
+        name_fragment_lower = name_fragment.lower()
+        # Simple scoring: substring containment
+        matches = [r for r in routines if name_fragment_lower in r.name.lower()]
+        if not matches:
+            self.speak(f"I couldn't find a routine matching {name_fragment}.")
+            return True
+        routine = sorted(matches, key=lambda r: len(r.name))[0]  # shortest name first
+        self.speak(f"Running routine {routine.name} now.")
+        async def runner():
+            await self.automation_engine.execute_routine(routine.id)
+        self._run_async(runner())
+        return True
 
     @contextmanager
     def _state_manager(self, state_name: str):
@@ -628,31 +846,47 @@ class VoiceAssistant:
         def tts_task():
             with self._state_manager("is_speaking"):
                 try:
+                    timer_id = start_timer("tts_start")
                     success = False
 
-                    # Choose TTS method based on configuration
-                    if self.config.prefer_sapi_tts and self.audio_manager.sapi_engine:
-                        # Try Windows SAPI first
-                        success = self.audio_manager._speak_with_sapi(text)
-                        if not success:
-                            # Fallback to gTTS
-                            self.logger.warning("SAPI failed, trying gTTS fallback")
+                    # Try new TTS backend first if available
+                    if hasattr(self, 'tts_manager') and self.tts_manager:
+                        try:
+                            success = self.tts_manager.speak(text)
+                            if success:
+                                end_timer(timer_id, {"backend": "new_tts"})
+                                self.logger.debug("New TTS backend succeeded")
+                        except Exception as e:
+                            self.logger.warning(f"New TTS backend failed: {e}")
+
+                    # Fallback to original TTS logic if new backend failed
+                    if not success:
+                        # Choose TTS method based on configuration
+                        if self.config.prefer_sapi_tts and self.audio_manager.sapi_engine:
+                            # Try Windows SAPI first
+                            success = self.audio_manager._speak_with_sapi(text)
+                            if not success:
+                                # Fallback to gTTS
+                                self.logger.warning("SAPI failed, trying gTTS fallback")
+                                audio_file = self.audio_manager.generate_speech(text)
+                                if audio_file:
+                                    self.audio_manager.play_audio(audio_file)
+                                    success = True
+                        else:
+                            # Try gTTS first (default behavior)
                             audio_file = self.audio_manager.generate_speech(text)
                             if audio_file:
                                 self.audio_manager.play_audio(audio_file)
                                 success = True
-                    else:
-                        # Try gTTS first (default behavior)
-                        audio_file = self.audio_manager.generate_speech(text)
-                        if audio_file:
-                            self.audio_manager.play_audio(audio_file)
-                            success = True
-                        else:
-                            # Fallback to Windows SAPI
-                            self.logger.warning(
-                                "gTTS failed, trying Windows SAPI fallback"
-                            )
-                            success = self.audio_manager._speak_with_sapi(text)
+                            else:
+                                # Fallback to Windows SAPI
+                                self.logger.warning(
+                                    "gTTS failed, trying Windows SAPI fallback"
+                                )
+                                success = self.audio_manager._speak_with_sapi(text)
+
+                        if success:
+                            end_timer(timer_id, {"backend": "legacy_tts"})
 
                     if success:
                         # Estimate speaking duration for gTTS
@@ -697,19 +931,41 @@ class VoiceAssistant:
             with self._state_manager("listening"):
                 self.result = ""
 
-                # Recognize speech
-                recognized_text, error_message = (
-                    self.speech_recognizer.recognize_speech()
-                )
+                # Recognize speech with new ASR backend if available
+                timer_id = start_timer("asr_latency")
+
+                if hasattr(self, 'asr_manager') and self.asr_manager:
+                    try:
+                        recognized_text, error_message = self.asr_manager.transcribe()
+                        end_timer(timer_id, {"backend": "new_asr"})
+                    except Exception as e:
+                        self.logger.warning(f"New ASR backend failed: {e}")
+                        recognized_text, error_message = self.speech_recognizer.recognize_speech()
+                        end_timer(timer_id, {"backend": "legacy_asr"})
+                else:
+                    recognized_text, error_message = self.speech_recognizer.recognize_speech()
+                    end_timer(timer_id, {"backend": "legacy_asr"})
 
                 if recognized_text:
+                    text_low = recognized_text.lower().strip()
+                    # Optional wake word gating for Jarvis persona
+                    if self.config.require_wake_word:
+                        wake = getattr(self.config, "wake_word", "jarvis").lower()
+                        if wake not in text_low:
+                            # Ignore phrases without the wake word to avoid interrupting flow
+                            self.result = recognized_text
+                            self.last_result_time = time.time()
+                            return
+                        # Strip wake word for cleaner command
+                        text_low = text_low.replace(wake, "", 1).strip(",. ")
+                        recognized_text = text_low if text_low else recognized_text
+
                     self.result = recognized_text
                     self.last_result_time = time.time()
                     self.speak("Got it")
 
                     # Process command immediately after "Got it" is spoken
-                    # Wait for "Got it" to finish, then process
-                    time.sleep(1.0)  # Give time for "Got it" to be said
+                    time.sleep(1.0)
                     self._process_command()
                 else:
                     self.result = error_message
@@ -793,6 +1049,10 @@ class VoiceAssistant:
                 self.speak(system_response)
                 return
 
+            # Automation commands (create/list/run routines)
+            if self._maybe_handle_automation(command):
+                return
+
             # Handle time/date queries
             if "time" in command:
                 time_str = time.strftime("%I:%M %p")
@@ -807,7 +1067,7 @@ class VoiceAssistant:
                 self.speak(self.result)
                 return
 
-            # Handle LLM queries
+            # Handle LLM queries (structured)
             self.logger.info("Delegating to LLM query handler")
             self._handle_llm_query(command)
 
@@ -818,26 +1078,61 @@ class VoiceAssistant:
             self.speak(error_msg)
 
     def _handle_llm_query(self, command: str):
-        """Handle LLM queries in separate thread"""
+        """Handle LLM queries in separate thread (structured command mode)"""
+        # Check for follow-up queries first
+        if hasattr(self, 'memory') and self.memory:
+            follow_up_response = self.memory.handle_follow_up(command)
+            if follow_up_response:
+                self.result = follow_up_response
+                self.speak(follow_up_response)
+                return
+
         if not self.llm_service or not self.llm_service.enabled:
-            # Provide a simple fallback response instead of just an error
             fallback_response = self._get_fallback_response(command)
             self.result = fallback_response
             self.speak(fallback_response)
             return
 
+        # Lazy-create action registry
+        if not hasattr(self, "action_registry"):
+            self.action_registry = ActionRegistry()
+
         self.thinking = True
-        self.result = "Processing your question..."
-        self.speak("Let me think about that")
+        self.result = "Processing your request..."
+        self.speak("Working on it")
 
         def llm_task():
             try:
-                response = self.llm_service.generate_response(command)
-                self.result = response
-                self.speak(response)
+                timer_id = start_timer("llm_response")
+                data = self.llm_service.generate_structured(command)
+                end_timer(timer_id, {"command_type": data.get("type", "unknown")})
+
+                if data.get("type") == "command" and data.get("action"):
+                    reply = data.get("reply") or ""
+                    action = data["action"]
+                    args = data.get("args", {})
+
+                    # Dispatch to system action
+                    dispatch_timer = start_timer("command_dispatch")
+                    result = self.action_registry.dispatch(action, args)
+                    end_timer(dispatch_timer, {"action": action})
+
+                    # Remember the action
+                    if hasattr(self, 'memory') and self.memory:
+                        success = "error" not in result.lower()
+                        self.memory.remember_action(action, args, result, success)
+
+                    # Speak LLM reply (short) if provided; else result
+                    out = reply or result
+                    self.result = out
+                    self.speak(out)
+                else:
+                    # Chat response
+                    out = data.get("reply") or self.llm_service.generate_response(command)
+                    self.result = out
+                    self.speak(out)
             except Exception as e:
-                self.logger.error(f"LLM error: {e}")
-                # Provide fallback response instead of generic error
+                self.logger.error(f"LLM structured error: {e}")
                 fallback_response = self._get_fallback_response(command)
                 self.result = fallback_response
                 self.speak(fallback_response)
@@ -1377,6 +1672,17 @@ class VoiceAssistant:
     def cleanup(self):
         """Cleanup resources and threads"""
         self.logger.info("Cleaning up Voice Assistant resources")
+
+        # Cleanup Jarvis backends
+        if hasattr(self, 'context_oracle') and self.context_oracle:
+            self.context_oracle.stop_monitoring()
+
+        if hasattr(self, 'wake_detector') and self.wake_detector:
+            if hasattr(self.wake_detector, 'stop'):
+                self.wake_detector.stop()
+
+        if hasattr(self, 'memory') and self.memory:
+            self.memory._save_memory()
 
         # Stop continuous listening
         if (

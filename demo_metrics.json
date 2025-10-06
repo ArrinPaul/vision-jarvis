@@ -1,0 +1,101 @@
+{
+  "session_start": 1756931116.5060809,
+  "export_time": 1756931116.5113397,
+  "targets": {
+    "wake_to_listen": 150,
+    "asr_latency": 300,
+    "llm_response": 1000,
+    "tts_start": 200,
+    "gesture_fps": 24,
+    "command_dispatch": 50,
+    "total_voice_latency": 2000
+  },
+  "quality_targets": {
+    "asr_accuracy": 0.95,
+    "gesture_confidence": 0.8,
+    "command_success_rate": 0.9
+  },
+  "metrics": {
+    "wake_to_listen": [
+      {
+        "value": 120,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "backend": "openwakeword"
+        }
+      }
+    ],
+    "asr_latency": [
+      {
+        "value": 250,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "backend": "faster_whisper"
+        }
+      }
+    ],
+    "llm_response": [
+      {
+        "value": 800,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "model": "gemini"
+        }
+      }
+    ],
+    "tts_start": [
+      {
+        "value": 180,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "backend": "edge_tts"
+        }
+      }
+    ],
+    "gesture_fps": [
+      {
+        "value": 28,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "resolution": "640x480"
+        }
+      }
+    ],
+    "command_dispatch": [
+      {
+        "value": 35,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "action": "set_volume"
+        }
+      }
+    ],
+    "asr_accuracy": [
+      {
+        "value": 0.96,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "language": "en"
+        }
+      }
+    ],
+    "gesture_confidence": [
+      {
+        "value": 0.85,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "gesture": "pinch"
+        }
+      }
+    ],
+    "command_success_rate": [
+      {
+        "value": 0.92,
+        "timestamp": 1756931116.5060809,
+        "context": {
+          "session": "demo"
+        }
+      }
+    ]
+  }
+}

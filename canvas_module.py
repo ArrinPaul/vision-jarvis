@@ -287,25 +287,62 @@ class CanvasModule:
                 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
             )
 
-            # Classification logic with confidence
+            # Additional features
+            moments = cv2.moments(largest_contour)
+            hu = cv2.HuMoments(moments).flatten()
+
+            def is_arrow(cnt, approx_pts):
+                # Arrowhead tends to create a concave vertex near the tip; simple heuristic
+                if len(approx_pts) < 5:
+                    return False
+                # Check for one acute angle (< 40 deg) and elongated bounding box
+                angles = []
+                for i in range(len(approx_pts)):
+                    p0 = approx_pts[i - 1][0]
+                    p1 = approx_pts[i][0]
+                    p2 = approx_pts[(i + 1) % len(approx_pts)][0]
+                    v1 = p0 - p1
+                    v2 = p2 - p1
+                    dot = float(v1.dot(v2))
+                    n1 = max(1.0, np.linalg.norm(v1))
+                    n2 = max(1.0, np.linalg.norm(v2))
+                    cosang = np.clip(dot / (n1 * n2), -1.0, 1.0)
+                    ang = np.degrees(np.arccos(cosang))
+                    angles.append(ang)
+                acute = sum(1 for a in angles if a < 40)
+                return (acute >= 1) and (max(w, h) / max(1, min(w, h)) > 1.8)
+
+            def is_star_shape(vertices_cnt, circ):
+                # Many vertices and low-ish solidity indicate spikes
+                return vertices_cnt >= 8 and circ < 0.7 and solidity < 0.85
+
+            def is_heart(cnt):
+                # Rough heart: moderate circularity, top-wide bottom-narrow (aspect < 1), and slight concavity
+                return 0.5 < circularity < 0.75 and aspect_ratio < 1.0 and solidity < 0.95
+
+            # Classification logic with confidence (extended)
             if circularity > 0.7:
                 return "circle", min(0.9, circularity)
             elif vertices == 3:
-                return "triangle", 0.8
+                return "triangle", 0.85
+            elif is_arrow(largest_contour, approx):
+                return "arrow", 0.75
             elif vertices == 4:
-                if 0.8 <= aspect_ratio <= 1.2:
-                    return "square", 0.85
+                if 0.85 <= aspect_ratio <= 1.15:
+                    return "square", 0.88
                 else:
-                    return "rectangle", 0.8
-            elif vertices > 6 and circularity > 0.5:
-                return "star", 0.7
+                    return "rectangle", 0.82
+            elif is_star_shape(vertices, circularity):
+                return "star", 0.72
+            elif is_heart(largest_contour):
+                return "heart", 0.7
             elif solidity < 0.8:
                 return "complex_shape", 0.6
+            else:
+                return "polygon", 0.55
         except Exception as e:
             print(f"Error in geometric shape detection: {e}")
             return "error", 0.0
-        else:
-            return "polygon", 0.5
 
     def get_canvas_hash(self, canvas):
         """Quick hash of canvas for caching"""
