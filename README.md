@@ -1,5 +1,15 @@
 # Vision Jarvis
 
+**Project Summary:**  
+An advanced AI-powered hand gesture and voice interaction system for seamless smart home and automation control. Integrates computer vision, speech recognition, and context-aware automation for a futuristic, multimodal user experience.
+
+**Tech Stack:**  
+- **Languages:** Python  
+- **Key Libraries:** OpenCV, SpeechRecognition, TensorFlow/PyTorch (assumed for AI), Numpy  
+- **Features:** Real-time gesture recognition, voice command processing, context-awareness, smart home device integration, biometric authentication, modular architecture
+
+---
+
 Vision Jarvis is an advanced AI-powered hand gesture and voice interaction system designed for seamless smart home and automation control. It integrates computer vision, speech recognition, and context-aware automation to provide a futuristic, multimodal user experience.
 
 ## Key Features
